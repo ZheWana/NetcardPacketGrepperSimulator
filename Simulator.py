@@ -12,10 +12,6 @@ from dbg_print import dbg_print
 
 state_map = {"DWELL": 0, "SWITCH": 1, "SCHEDULE": 2, "SWITCH_TO_SCHEDULE": 3}
 
-# "R1-polling-R2-scheduling"
-# or "R1-Rn-both-scheduling-and-polling"
-# or "R1-Rn-polling"
-
 cur_sim_mode = "R1-Rn-both-scheduling-and-polling-shared"
 # cur_sim_mode = "R1-Rn-both-scheduling-and-polling"
 # cur_sim_mode = "R1-polling-R2-scheduling"

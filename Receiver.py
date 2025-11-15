@@ -12,6 +12,7 @@ class sender_info:
     send_times: int
     next_send_timestep: int
     interval_history: deque[int]
+    schedule_handling: bool = False  # 是否已经有sender在处理该发送者的计划接收
     min_interval: int = 3600000  # 初始设为1小时
     channel_index: int = -1
     interval_frequency: dict = field(default_factory=dict)
@@ -69,10 +70,10 @@ class Receiver:
     ):
         self.recver_index = index
         self.managed_channels: list[Channel] = channels
-        
+
         # 用传入的起始点
         self.poll_channel_idx = initial_poll_channel
-        self.active_channel_idx = initial_poll_channel # 活动信道同步
+        self.active_channel_idx = initial_poll_channel  # 活动信道同步
 
         self.state = "DWELL"  # or "SWITCH" or "SCHEDULE" or "SWITCH_TO_SCHEDULE" ("DWELL" used as "IDLE" in only scheduling mode)
 
@@ -86,7 +87,9 @@ class Receiver:
         self.schedule_timeout_counter = 0
 
         self.senders_info = {} if uni_sender_info is None else uni_sender_info
-        self.senders_channel_index = [] if uni_senders_channel_index is None else uni_senders_channel_index
+        self.senders_channel_index = (
+            [] if uni_senders_channel_index is None else uni_senders_channel_index
+        )
         self.first_switch_loop = False
 
     @property
@@ -101,7 +104,11 @@ class Receiver:
                     % len(self.senders_channel_index)
                 ]
             else:
-                next_poll_idx = self.senders_channel_index[0] if self.senders_channel_index else self.poll_channel_idx
+                next_poll_idx = (
+                    self.senders_channel_index[0]
+                    if self.senders_channel_index
+                    else self.poll_channel_idx
+                )
         else:
             next_poll_idx = (self.poll_channel_idx + 1) % len(self.managed_channels)
         if next_poll_idx != self.active_channel_idx:
@@ -134,6 +141,7 @@ class Receiver:
             info.append_interval(cur_timestep - info.last_sent_timestep)
             info.last_sent_timestep = cur_timestep
             info.send_times += 1
+            info.schedule_handling = False
 
             # 规划下次接收包的时间，如果太短不足1s要延展到1s以上，以免频繁切换信道
             next_send_timestep = cur_timestep + info.min_interval
@@ -150,14 +158,20 @@ class Receiver:
                 info.next_send_timestep = cur_timestep + info.min_interval
         return info.next_send_timestep - cur_timestep
 
-    def packet_recv(self, cur_timestep=0, just_polling=False, limited_polling=False) -> tuple[str, bool]:
+    def packet_recv(
+        self, cur_timestep=0, just_polling=False, limited_polling=False
+    ) -> tuple[str, bool]:
         if not just_polling:
             # 不在切换状态时，先判断是否有计划数据包，如果有则优先接收，否则再进入轮询驻留模式
             if self.state == "DWELL":
                 sender_schedule_time_min = 100000  # 一个很大的数
+                sender_scheduled_info: sender_info = None
                 active_channel_index = -1
                 delete_ids = []
                 for sender_id, info in self.senders_info.items():
+                    # 如果有其他receiver在处理该发送者的计划接收，跳过
+                    if info.schedule_handling:
+                        continue
                     # 计算下次计划接收时间
                     sender_schedule_time = self.next_schedule_recv_time(
                         cur_timestep, info
@@ -166,17 +180,20 @@ class Receiver:
                     if sender_schedule_time > 3600 * 1000:
                         delete_ids.append(sender_id)
                         continue
+                    # 取小于20ms的最小计划时间，记录信道和发送者信息
                     if (
                         0 < sender_schedule_time < 20
                         and sender_schedule_time < sender_schedule_time_min
                     ):
                         sender_schedule_time_min = sender_schedule_time
                         active_channel_index = info.channel_index
+                        sender_scheduled_info = info
                 # 开删！
                 for did in delete_ids:
                     del self.senders_info[did]
 
                 if active_channel_index != -1:
+                    sender_scheduled_info.schedule_handling = True
                     if active_channel_index != self.poll_channel_idx:
                         # 切换到该发送者所在频道接收数据包
                         self.current_channel.quit_listen()
