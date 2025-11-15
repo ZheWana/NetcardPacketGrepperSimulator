@@ -65,11 +65,14 @@ class Receiver:
         channel_dwell_time,
         uni_sender_info: dict = None,
         uni_senders_channel_index: list = None,
+        initial_poll_channel: int = 0,  # 加一个初始轮询信道参数
     ):
         self.recver_index = index
         self.managed_channels: list[Channel] = channels
-        self.poll_channel_idx = 0
-        self.active_channel_idx = 0
+        
+        # 用传入的起始点
+        self.poll_channel_idx = initial_poll_channel
+        self.active_channel_idx = initial_poll_channel # 活动信道同步
 
         self.state = "DWELL"  # or "SWITCH" or "SCHEDULE" or "SWITCH_TO_SCHEDULE" ("DWELL" used as "IDLE" in only scheduling mode)
 
@@ -78,6 +81,7 @@ class Receiver:
         self.expected_dwell_time = channel_dwell_time
         self.dwell_timer = 0
         self.max_schedule_timeout = channel_dwell_time
+        # self.max_schedule_timeout = 20
         self.schedule_timeout_timer = 0
         self.schedule_timeout_counter = 0
 

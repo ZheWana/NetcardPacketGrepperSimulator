@@ -16,7 +16,8 @@ state_map = {"DWELL": 0, "SWITCH": 1, "SCHEDULE": 2, "SWITCH_TO_SCHEDULE": 3}
 # or "R1-Rn-both-scheduling-and-polling"
 # or "R1-Rn-polling"
 
-cur_sim_mode = "R1-Rn-both-scheduling-and-polling"
+cur_sim_mode = "R1-Rn-both-scheduling-and-polling-shared"
+# cur_sim_mode = "R1-Rn-both-scheduling-and-polling"
 # cur_sim_mode = "R1-polling-R2-scheduling"
 # cur_sim_mode = "R1-polling-R2-limited-polling"
 # cur_sim_mode = "R1-Rn-polling"
@@ -33,37 +34,47 @@ class Simulator:
         self.num_channels = 40
         self.num_receivers = 2
         self.num_senders = num_senders
-        channels_per_receiver = self.num_channels // self.num_receivers
+        
+        # “错开轮询”
+        channels_per_receiver = self.num_channels // self.num_receivers if self.num_receivers > 0 else 0
 
-        self.uni_sender_info = {}  # 共享发送者信息
-        self.uni_senders_channel_index = []  # 共享发送者信道索引
+        self.uni_sender_info = {}  # 共享sender信息
+        self.uni_senders_channel_index = []  # 共享sender信道索引
 
         self.channels = Channels(num_channels=self.num_channels)
 
         self.recvers = [
             Receiver(
                 channels=(
+                    # channels 的分配逻辑
+                    # 旧模式（分区）
                     self.channels.channels[
                         i * channels_per_receiver : (i + 1) * channels_per_receiver
                     ]
+                    # 只有在非共享模式下才分区
                     if cur_sim_mode == "R1-Rn-both-scheduling-and-polling"
+                    # 其他所有模式都使用全信道
                     else self.channels.channels
                 ),
                 index=i,
                 channel_switch_time=5,
                 channel_dwell_time=220,
                 uni_sender_info=(
-                    # 一个轮询一个调度时，共享发送者信息，否则各自维护
+                    #修改 uni_sender_info 的分配逻辑
                     self.uni_sender_info
                     if cur_sim_mode == "R1-polling-R2-scheduling"
+                    or cur_sim_mode == "R1-Rn-both-scheduling-and-polling-shared" # 共享模式
                     else None
                 ),
                 uni_senders_channel_index=(
-                    # 仅在R1-polling-R2-limited-polling模式下共享发送者信道索引
+                    #修改 uni_senders_channel_index 的分配逻辑
                     self.uni_senders_channel_index
                     if cur_sim_mode == "R1-polling-R2-limited-polling"
+                    or cur_sim_mode == "R1-Rn-both-scheduling-and-polling-shared"
                     else None
                 ),
+                # 传入错开的轮询起始点
+                initial_poll_channel=i * channels_per_receiver,
             )
             for i in range(self.num_receivers)
         ]
@@ -107,7 +118,11 @@ class Simulator:
                     result = recver.packet_recv(
                         cur_timestep=self.cur_timestep, just_polling=True
                     )
-                elif cur_sim_mode == "R1-Rn-both-scheduling-and-polling":
+                # add
+                elif (
+                    cur_sim_mode == "R1-Rn-both-scheduling-and-polling"
+                    or cur_sim_mode == "R1-Rn-both-scheduling-and-polling-shared"
+                ):
                     result = recver.packet_recv(
                         cur_timestep=self.cur_timestep, just_polling=False
                     )
@@ -118,8 +133,9 @@ class Simulator:
                         limited_polling=True if i == 1 else False,
                     )
                 # 状态记录，用于显示时序图
-                state = state_map[result[0]]
-                self.state_records_per_recver[i].append((state, result[1]))
+                if result: # 确保 result 不是 None
+                    state = state_map[result[0]]
+                    self.state_records_per_recver[i].append((state, result[1]))
 
             self.channels.all_channel_lost()
             self.cur_timestep += 1
@@ -153,8 +169,21 @@ class Simulator:
             )
 
         sender_infos = []
-        for recver in self.recvers:
-            sender_infos.extend(recver.senders_info.values())
+        # 获取信息add
+        if self.uni_sender_info:
+             sender_infos = self.uni_sender_info.values()
+        else:
+            for recver in self.recvers:
+                sender_infos.extend(recver.senders_info.values())
+        
+        # 去重
+        if self.uni_sender_info:
+            pass # 已经是唯一的
+        else:
+            unique_sender_infos = {info.id: info for info in sender_infos}
+            sender_infos = unique_sender_infos.values()
+
+
         column_labels = [
             "id",
             "last_sent_timestep",
@@ -184,6 +213,10 @@ class Simulator:
                 f.write("| " + " | ".join(str(item) for item in row) + " |\n")
 
         for i, state_records in enumerate(self.state_records_per_recver):
+            if not state_records: # 增加一个空检查
+                print(f"Receiver {i}: No state records found.")
+                continue
+
             time_list = list(range(len(state_records)))
             states = []
             recved_idx, not_recved_idx = [], []
@@ -271,7 +304,8 @@ if __name__ == "__main__":
             sim.summary()
 
     elif OUTPUT_DATA_MODE == "CSV":
-        CSV_FILENAME = "sim_result.csv"
+        # CSV_FILENAME = "sim_result.csv"
+        CSV_FILENAME = datetime.now().strftime("sim_result_%Y%m%d_%H%M%S.csv")
         # 如果想每次都新建CSV（可注释下一行），否则默认每次都在同一个csv追加
         if os.path.exists(CSV_FILENAME):
             os.remove(CSV_FILENAME)
